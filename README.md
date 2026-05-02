@@ -37,18 +37,30 @@ In Arduino IDE, use **Tools > Manage Libraries...**, search each name, and insta
 
 Use `master_float/master_float.ino` for the sealed float. It supports:
 
-- Configurable mission targets, hold time, profile count, P gain, tolerances, and log interval from Python.
+- Configurable mission targets, hold time, profile count, timed buoyancy pulses, tolerances, and log interval from Python.
 - Configurable servo down, neutral, and up angles from Python; defaults are 30, 90, and 150 degrees.
+- Main mission uses timed pulses plus depth thresholds, not PID: `up=150` adds water/sinks, `neutral=90` waits, and `down=30` removes water/rises.
 - Surface depth zeroing before mission or depth recording.
 - Offline depth recording that can be started topside and downloaded after recovery.
-- Timed manual commands: `down <seconds>` and `up <seconds>`, limited to 10 seconds.
+- Timed manual commands: `up <seconds>` runs the sink/add-water direction and `down <seconds>` runs the rise/remove-water direction, limited to 10 seconds.
+- Single-servo timed manual commands: `one 1 down 0.25` or `one 2 up 0.5`, also limited to 10 seconds.
 - Main mission with two default profiles, then return to surface after the final 0.40 m hold.
-- Mission and depth data download as CSV through the Python station.
+- Mission data is downloaded and graphed automatically after the Python station polls `STATUS` and sees `mission_complete=1`.
 - One shared 600-sample onboard log buffer for mission or depth-recording data.
 - Sensor init tries 10 times; if the MS5837 is unavailable, WiFi and manual servo commands still work, but depth zeroing, depth recording, and mission start return `ERROR NO_SENSOR`.
-- Each mission phase has a configurable timeout, defaulting to 180 seconds, so the float does not command one direction forever if a target is never reached.
+- Depth-threshold waits have a configurable timeout, defaulting to 180 seconds. If a deep/shallow threshold is not reached, the float switches to the return-surface sequence.
+- During an active mission, only `STATUS` and `ABORT` are accepted over WiFi so the float cannot be reconfigured mid-run.
 
 Set `ssid` and `password` in the Arduino sketch before upload. Mission settings are sent from Python and do not require re-uploading.
+
+Default mission timing from the Python station is:
+
+- `sink_pulse=5`: run `up=150` to add water and start descending.
+- `deep_neutralize=5`: after reaching the deep target, run `down=30` to get closer to neutral.
+- `rise_pulse=5`: after the deep hold, run `down=30` to start rising.
+- `shallow_neutralize=5`: after reaching the shallow target, run `up=150` to stop rising.
+- `return_surface=5`: after the final shallow hold, run `down=30` to return for recovery.
+- `threshold_timeout=180`: if a depth threshold is not reached in time, switch to the return-surface sequence.
 
 Do not power-cycle the float before downloading data. Logs are stored in RAM, not flash.
 
@@ -89,10 +101,10 @@ Use `connectivity_fast_test/connectivity_fast_test.ino` to test the topside clie
 5. Run:
 
 ```bash
-uv run python main.py <FLOAT_IP> --output fast_test_data.csv
+uv run python main.py <FLOAT_IP>
 ```
 
-Press Enter in the Python terminal. The test sketch simulates both vertical profiles in about 16 seconds, then the Python client automatically downloads fake `time,depth,state,control` data and plots it.
+Use the menu to start the mission and download fake data after the test sketch finishes.
 
 ## Above-ground timed servo test
 
@@ -106,7 +118,7 @@ Use `timed_servo_test/timed_servo_test.ino` to test the WiFi protocol and servo 
 6. Run:
 
 ```bash
-uv run python main.py <FLOAT_IP> --output timed_servo_test_data.csv
+uv run python main.py <FLOAT_IP>
 ```
 
 This sketch moves the servos through the full configured range on a timed sequence: 70 degrees for down, 90 degrees for neutral, and 110 degrees for up. It does not read the MS5837 and does not use closed-loop depth control.

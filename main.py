@@ -9,7 +9,6 @@ import pandas as pd
 
 DEFAULT_PORT = 80
 CONNECT_TIMEOUT_SECONDS = 10
-GREETING_TIMEOUT_SECONDS = 1
 RESPONSE_TIMEOUT_SECONDS = 10
 RETRY_DELAY_SECONDS = 5
 
@@ -22,13 +21,17 @@ DEFAULT_CONFIG = {
     "surface": 0.05,
     "hold": 30.0,
     "profiles": 2,
-    "kp": 20.0,
+    "sink_pulse": 5.0,
+    "deep_neutralize": 5.0,
+    "rise_pulse": 5.0,
+    "shallow_neutralize": 5.0,
+    "return_surface": 5.0,
     "deep_tol": 0.10,
     "shallow_tol": 0.05,
     "surface_tol": 0.05,
     "min_safe": 0.30,
     "log": 1.0,
-    "phase_timeout": 180.0,
+    "threshold_timeout": 180.0,
 }
 
 DEFAULT_SERVO_CONFIG = {
@@ -57,19 +60,6 @@ class LineSocket:
         line, self.buffer = self.buffer.split(b"\n", 1)
         return line.decode("utf-8", errors="replace").strip()
 
-    def optional_lines(self, max_lines, timeout):
-        lines = []
-        for _ in range(max_lines):
-            try:
-                line = self.readline(timeout)
-            except TimeoutError:
-                break
-            if not line:
-                break
-            lines.append(line)
-        return lines
-
-
 def connect(host, port):
     return socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS)
 
@@ -93,7 +83,6 @@ def read_response_lines(client):
 def send_command(host, port, command):
     with connect(host, port) as sock:
         client = LineSocket(sock)
-        client.optional_lines(2, GREETING_TIMEOUT_SECONDS)
         sock.sendall(f"{command}\n".encode("utf-8"))
         return read_response_lines(client)
 
@@ -101,6 +90,22 @@ def send_command(host, port, command):
 def print_response(lines):
     for line in lines:
         print(line)
+
+
+def parse_status(lines):
+    for line in lines:
+        if not line.startswith("OK STATUS"):
+            continue
+
+        fields = {}
+        for part in line.split():
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            fields[key] = value
+        return fields
+
+    raise RuntimeError("No STATUS response.")
 
 
 def require_ok(lines):
@@ -130,13 +135,26 @@ def configure_mission(host, port, config):
     config["surface"] = prompt_float("Final surface target meters", config["surface"])
     config["hold"] = prompt_float("Hold time seconds", config["hold"])
     config["profiles"] = prompt_int("Profile count", config["profiles"])
-    config["kp"] = prompt_float("P gain", config["kp"])
+    config["sink_pulse"] = prompt_float("Sink pulse seconds (UP=150, adds water)", config["sink_pulse"])
+    config["deep_neutralize"] = prompt_float(
+        "Deep neutralize pulse seconds (DOWN=30, removes water)",
+        config["deep_neutralize"],
+    )
+    config["rise_pulse"] = prompt_float("Rise pulse seconds (DOWN=30, removes water)", config["rise_pulse"])
+    config["shallow_neutralize"] = prompt_float(
+        "Shallow neutralize pulse seconds (UP=150, adds water)",
+        config["shallow_neutralize"],
+    )
+    config["return_surface"] = prompt_float(
+        "Final return surface pulse seconds (DOWN=30, removes water)",
+        config["return_surface"],
+    )
     config["deep_tol"] = prompt_float("Deep tolerance meters", config["deep_tol"])
     config["shallow_tol"] = prompt_float("Shallow tolerance meters", config["shallow_tol"])
     config["surface_tol"] = prompt_float("Surface tolerance meters", config["surface_tol"])
     config["min_safe"] = prompt_float("Near-surface safety depth meters", config["min_safe"])
     config["log"] = prompt_float("Log interval seconds", config["log"])
-    config["phase_timeout"] = prompt_float("Max seconds per mission phase", config["phase_timeout"])
+    config["threshold_timeout"] = prompt_float("Max seconds waiting for a depth threshold", config["threshold_timeout"])
 
     parts = [f"{key}={value}" for key, value in config.items()]
     require_ok(send_command(host, port, "CONFIG " + " ".join(parts)))
@@ -153,7 +171,10 @@ def configure_servos(host, port, servo_config):
 
 
 def manual_control(host, port):
-    print("Manual commands: down <seconds>, up <seconds>, neutral, abort, back")
+    print(
+        "Manual commands: up <seconds> = sink/add water, down <seconds> = rise/remove water, "
+        "one <1|2> <down|up|neutral> <seconds>, neutral, abort, back"
+    )
     while True:
         raw = input("manual> ").strip().lower()
         if raw in {"back", "exit", "quit"}:
@@ -166,8 +187,22 @@ def manual_control(host, port):
             continue
 
         parts = raw.split()
+        if len(parts) == 4 and parts[0] == "one":
+            servo_number, direction, seconds = parts[1], parts[2], parts[3]
+            if servo_number not in {"1", "2"} or direction not in {"down", "up", "neutral"}:
+                print("Use: one 1 down 0.25 or one 2 up 0.5")
+                continue
+            try:
+                float(seconds)
+            except ValueError:
+                print("Seconds must be a number.")
+                continue
+
+            require_ok(send_command(host, port, f"MANUAL_ONE {servo_number} {direction.upper()} {seconds}"))
+            continue
+
         if len(parts) != 2 or parts[0] not in {"down", "up"}:
-            print("Use: down 3, up 2, neutral, abort, back")
+            print("Use: down 3, up 2, one 1 down 0.25, neutral, abort, back")
             continue
 
         direction, seconds = parts
@@ -191,6 +226,37 @@ def wait_for_reconnect_and_download(host, port, command):
             print_response(lines)
         except (OSError, TimeoutError, RuntimeError) as exc:
             print(f"Not ready/reachable yet: {exc}")
+
+        time.sleep(RETRY_DELAY_SECONDS)
+        attempt += 1
+
+
+def wait_for_mission_complete(host, port):
+    attempt = 1
+    last_phase = None
+    last_report_time = 0.0
+
+    while True:
+        try:
+            fields = parse_status(send_command(host, port, "STATUS"))
+            mode = fields.get("mode", "UNKNOWN")
+            phase = fields.get("phase", "UNKNOWN")
+            samples = fields.get("samples", "?")
+            mission_complete = fields.get("mission_complete", "0")
+            now = time.monotonic()
+
+            if phase != last_phase or now - last_report_time >= 30:
+                print(
+                    f"Status: mode={mode} phase={phase} "
+                    f"mission_complete={mission_complete} samples={samples}"
+                )
+                last_phase = phase
+                last_report_time = now
+
+            if mission_complete == "1":
+                return
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            print(f"Mission status attempt {attempt}: not reachable/ready yet: {exc}")
 
         time.sleep(RETRY_DELAY_SECONDS)
         attempt += 1
@@ -252,7 +318,11 @@ def stop_and_download_depth(host, port):
 def start_mission(host, port):
     input("Press Enter to send START_MISSION...")
     require_ok(send_command(host, port, "START_MISSION"))
-    print("Mission started. Recover/reconnect after surfacing, then download mission data.")
+    print("Mission started. Polling STATUS until mission_complete=1 before downloading.")
+    wait_for_mission_complete(host, port)
+    print("Mission complete. Downloading mission data...")
+    lines = wait_for_reconnect_and_download(host, port, "GET_MISSION_DATA")
+    save_and_plot(lines, MISSION_CSV)
 
 
 def download_mission(host, port):
@@ -272,7 +342,7 @@ def menu(host, port):
         "5": ("Start depth recording", lambda: start_depth_record(host, port)),
         "6": ("Stop/download depth recording", lambda: stop_and_download_depth(host, port)),
         "7": ("Manual timed control", lambda: manual_control(host, port)),
-        "8": ("Start mission", lambda: start_mission(host, port)),
+        "8": ("Start mission and auto-download", lambda: start_mission(host, port)),
         "9": ("Download mission data", lambda: download_mission(host, port)),
         "10": ("Abort/neutral", lambda: require_ok(send_command(host, port, "ABORT"))),
     }
