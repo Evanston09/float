@@ -38,6 +38,7 @@ In Arduino IDE, use **Tools > Manage Libraries...**, search each name, and insta
 Use `master_float/master_float.ino` for the sealed float. It supports:
 
 - Configurable mission targets, hold time, profile count, P gain, tolerances, and log interval from Python.
+- Configurable servo down, neutral, and up angles from Python; defaults are 30, 90, and 150 degrees.
 - Surface depth zeroing before mission or depth recording.
 - Offline depth recording that can be started topside and downloaded after recovery.
 - Timed manual commands: `down <seconds>` and `up <seconds>`, limited to 10 seconds.

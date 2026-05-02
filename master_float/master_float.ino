@@ -15,9 +15,9 @@ const char* password = "henryisachud";
 const int SERVO1_PIN = 2;
 const int SERVO2_PIN = 3;
 const int WIFI_LED_PIN = LED_BUILTIN;
-const int SERVO_UP_DEG = 150;
-const int SERVO_NEUTRAL_DEG = 90;
-const int SERVO_DOWN_DEG = 30;
+const int DEFAULT_SERVO_UP_DEG = 150;
+const int DEFAULT_SERVO_NEUTRAL_DEG = 90;
+const int DEFAULT_SERVO_DOWN_DEG = 30;
 
 const int MAX_LOG_POINTS = 600;
 const int SENSOR_INIT_MAX_ATTEMPTS = 10;
@@ -99,7 +99,10 @@ unsigned long manualEndMs = 0;
 unsigned long lastWifiRetryMs = 0;
 int currentProfile = 1;
 int lastControl = 0;
-int lastServoDeg = SERVO_NEUTRAL_DEG;
+int servoUpDeg = DEFAULT_SERVO_UP_DEG;
+int servoNeutralDeg = DEFAULT_SERVO_NEUTRAL_DEG;
+int servoDownDeg = DEFAULT_SERVO_DOWN_DEG;
+int lastServoDeg = DEFAULT_SERVO_NEUTRAL_DEG;
 bool missionComplete = false;
 bool depthRecordComplete = false;
 bool sensorReady = false;
@@ -161,15 +164,15 @@ const char* missionPhaseName() {
 }
 
 void setServoAngle(int servoDeg) {
-  lastServoDeg = constrain(servoDeg, SERVO_DOWN_DEG, SERVO_UP_DEG);
+  lastServoDeg = constrain(servoDeg, servoDownDeg, servoUpDeg);
   servo1.write(lastServoDeg);
   servo2.write(lastServoDeg);
 }
 
 void setControl(int control) {
-  int maxControl = SERVO_NEUTRAL_DEG - SERVO_DOWN_DEG;
+  int maxControl = servoNeutralDeg - servoDownDeg;
   lastControl = constrain(control, -maxControl, maxControl);
-  setServoAngle(SERVO_NEUTRAL_DEG - lastControl);
+  setServoAngle(servoNeutralDeg - lastControl);
 }
 
 void holdDepth(float targetDepth, float depth) {
@@ -179,7 +182,7 @@ void holdDepth(float targetDepth, float depth) {
 
 void neutral() {
   lastControl = 0;
-  setServoAngle(SERVO_NEUTRAL_DEG);
+  setServoAngle(servoNeutralDeg);
 }
 
 void logPoint(float depth, const char* stateName) {
@@ -297,6 +300,22 @@ void applyConfig(String command) {
   }
 }
 
+bool applyServoConfig(String command) {
+  int up = intValueAfter(command, "up", servoUpDeg);
+  int neutralDeg = intValueAfter(command, "neutral", servoNeutralDeg);
+  int down = intValueAfter(command, "down", servoDownDeg);
+
+  if (down < 0 || up > 180 || down >= neutralDeg || neutralDeg >= up) {
+    return false;
+  }
+
+  servoUpDeg = up;
+  servoNeutralDeg = neutralDeg;
+  servoDownDeg = down;
+  neutral();
+  return true;
+}
+
 void setMissionPhase(MissionPhase nextPhase) {
   missionPhase = nextPhase;
   phaseStartMs = millis();
@@ -351,11 +370,11 @@ bool startManualMove(String command) {
   }
 
   if (direction == "DOWN") {
-    setServoAngle(SERVO_DOWN_DEG);
-    lastControl = SERVO_NEUTRAL_DEG - SERVO_DOWN_DEG;
+    setServoAngle(servoDownDeg);
+    lastControl = servoNeutralDeg - servoDownDeg;
   } else if (direction == "UP") {
-    setServoAngle(SERVO_UP_DEG);
-    lastControl = SERVO_NEUTRAL_DEG - SERVO_UP_DEG;
+    setServoAngle(servoUpDeg);
+    lastControl = servoNeutralDeg - servoUpDeg;
   } else {
     return false;
   }
@@ -387,7 +406,7 @@ void updateMission(float depth) {
   }
 
   if (depth < config.minSafeDepthM && missionPhase != PHASE_RETURN_SURFACE && missionPhase != PHASE_COMPLETE) {
-    setControl(SERVO_NEUTRAL_DEG - SERVO_DOWN_DEG);
+    setControl(servoNeutralDeg - servoDownDeg);
     logPoint(depth, "SURFACE_SAFETY");
     return;
   }
@@ -488,7 +507,13 @@ void sendStatus(WiFiClient& client) {
   client.print(" sensor=");
   client.print(sensorReady ? "1" : "0");
   client.print(" samples=");
-  client.println(logIndex);
+  client.print(logIndex);
+  client.print(" servo_down=");
+  client.print(servoDownDeg);
+  client.print(" servo_neutral=");
+  client.print(servoNeutralDeg);
+  client.print(" servo_up=");
+  client.println(servoUpDeg);
   client.flush();
 }
 
@@ -502,6 +527,12 @@ void handleCommand(WiFiClient& client, String command) {
   } else if (upper.startsWith("CONFIG")) {
     applyConfig(command);
     client.println("OK CONFIG");
+  } else if (upper.startsWith("SERVO_CONFIG")) {
+    if (applyServoConfig(command)) {
+      client.println("OK SERVO_CONFIG");
+    } else {
+      client.println("ERROR SERVO_CONFIG");
+    }
   } else if (upper == "ZERO_DEPTH") {
     if (!sensorReady) {
       client.println("ERROR NO_SENSOR");

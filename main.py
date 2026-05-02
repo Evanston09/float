@@ -31,6 +31,12 @@ DEFAULT_CONFIG = {
     "phase_timeout": 180.0,
 }
 
+DEFAULT_SERVO_CONFIG = {
+    "down": 30,
+    "neutral": 90,
+    "up": 150,
+}
+
 
 class LineSocket:
     def __init__(self, sock):
@@ -134,6 +140,16 @@ def configure_mission(host, port, config):
 
     parts = [f"{key}={value}" for key, value in config.items()]
     require_ok(send_command(host, port, "CONFIG " + " ".join(parts)))
+
+
+def configure_servos(host, port, servo_config):
+    print("Enter servo angles. Press Enter to keep a default.")
+    servo_config["down"] = prompt_int("Down angle", servo_config["down"])
+    servo_config["neutral"] = prompt_int("Neutral angle", servo_config["neutral"])
+    servo_config["up"] = prompt_int("Up angle", servo_config["up"])
+
+    parts = [f"{key}={value}" for key, value in servo_config.items()]
+    require_ok(send_command(host, port, "SERVO_CONFIG " + " ".join(parts)))
 
 
 def manual_control(host, port):
@@ -246,17 +262,19 @@ def download_mission(host, port):
 
 def menu(host, port):
     config = DEFAULT_CONFIG.copy()
+    servo_config = DEFAULT_SERVO_CONFIG.copy()
 
     actions = {
         "1": ("Ping/status", lambda: print_response(send_command(host, port, "STATUS"))),
         "2": ("Configure mission", lambda: configure_mission(host, port, config)),
-        "3": ("Zero depth", lambda: require_ok(send_command(host, port, "ZERO_DEPTH"))),
-        "4": ("Start depth recording", lambda: start_depth_record(host, port)),
-        "5": ("Stop/download depth recording", lambda: stop_and_download_depth(host, port)),
-        "6": ("Manual timed control", lambda: manual_control(host, port)),
-        "7": ("Start mission", lambda: start_mission(host, port)),
-        "8": ("Download mission data", lambda: download_mission(host, port)),
-        "9": ("Abort/neutral", lambda: require_ok(send_command(host, port, "ABORT"))),
+        "3": ("Configure servo angles", lambda: configure_servos(host, port, servo_config)),
+        "4": ("Zero depth", lambda: require_ok(send_command(host, port, "ZERO_DEPTH"))),
+        "5": ("Start depth recording", lambda: start_depth_record(host, port)),
+        "6": ("Stop/download depth recording", lambda: stop_and_download_depth(host, port)),
+        "7": ("Manual timed control", lambda: manual_control(host, port)),
+        "8": ("Start mission", lambda: start_mission(host, port)),
+        "9": ("Download mission data", lambda: download_mission(host, port)),
+        "10": ("Abort/neutral", lambda: require_ok(send_command(host, port, "ABORT"))),
     }
 
     while True:
