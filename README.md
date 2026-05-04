@@ -47,11 +47,13 @@ Use `master_float/master_float.ino` for the sealed float. It supports:
 - Main mission with two default profiles, then return to surface after the final 0.40 m hold.
 - Mission data is downloaded and graphed automatically after the Python station polls `STATUS` and sees `mission_complete=1`.
 - One shared 600-sample onboard log buffer for mission or depth-recording data.
+- Downloaded mission/depth packets include the MATE company string, float time in seconds since recording started, and depth in meters.
 - Sensor init tries 10 times; if the MS5837 is unavailable, WiFi and manual servo commands still work, but depth zeroing, depth recording, and mission start return `ERROR NO_SENSOR`.
 - Depth-threshold waits have a configurable timeout, defaulting to 180 seconds. If a deep/shallow threshold is not reached, the float switches to the return-surface sequence.
+- If the mission is still running after 12 minutes, the float forces `down=30` for 30 seconds to push water out and recover to the surface.
 - During an active mission, only `STATUS` and `ABORT` are accepted over WiFi so the float cannot be reconfigured mid-run.
 
-Set `ssid` and `password` in the Arduino sketch before upload. Mission settings are sent from Python and do not require re-uploading.
+Set `ssid`, `password`, and `DEFAULT_COMPANY_STRING` in the Arduino sketch before upload. The company string can also be changed from the Python mission configuration menu before the run. Mission settings are sent from Python and do not require re-uploading.
 
 Default mission timing from the Python station is:
 

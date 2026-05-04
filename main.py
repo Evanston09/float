@@ -16,6 +16,7 @@ MISSION_CSV = Path("mission_data.csv")
 DEPTH_CSV = Path("depth_record_data.csv")
 
 DEFAULT_CONFIG = {
+    "company": "0297A",
     "deep": 2.5,
     "shallow": 0.40,
     "surface": 0.05,
@@ -59,6 +60,7 @@ class LineSocket:
 
         line, self.buffer = self.buffer.split(b"\n", 1)
         return line.decode("utf-8", errors="replace").strip()
+
 
 def connect(host, port):
     return socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS)
@@ -128,19 +130,31 @@ def prompt_int(prompt, default):
     return int(value)
 
 
+def prompt_text(prompt, default):
+    value = input(f"{prompt} [{default}]: ").strip()
+    if not value:
+        return default
+    return value
+
+
 def configure_mission(host, port, config):
     print("Enter mission settings. Press Enter to keep a default.")
+    config["company"] = prompt_text("MATE company string", config["company"])
     config["deep"] = prompt_float("Deep target meters", config["deep"])
     config["shallow"] = prompt_float("Shallow target meters", config["shallow"])
     config["surface"] = prompt_float("Final surface target meters", config["surface"])
     config["hold"] = prompt_float("Hold time seconds", config["hold"])
     config["profiles"] = prompt_int("Profile count", config["profiles"])
-    config["sink_pulse"] = prompt_float("Sink pulse seconds (UP=150, adds water)", config["sink_pulse"])
+    config["sink_pulse"] = prompt_float(
+        "Sink pulse seconds (UP=150, adds water)", config["sink_pulse"]
+    )
     config["deep_neutralize"] = prompt_float(
         "Deep neutralize pulse seconds (DOWN=30, removes water)",
         config["deep_neutralize"],
     )
-    config["rise_pulse"] = prompt_float("Rise pulse seconds (DOWN=30, removes water)", config["rise_pulse"])
+    config["rise_pulse"] = prompt_float(
+        "Rise pulse seconds (DOWN=30, removes water)", config["rise_pulse"]
+    )
     config["shallow_neutralize"] = prompt_float(
         "Shallow neutralize pulse seconds (UP=150, adds water)",
         config["shallow_neutralize"],
@@ -150,11 +164,19 @@ def configure_mission(host, port, config):
         config["return_surface"],
     )
     config["deep_tol"] = prompt_float("Deep tolerance meters", config["deep_tol"])
-    config["shallow_tol"] = prompt_float("Shallow tolerance meters", config["shallow_tol"])
-    config["surface_tol"] = prompt_float("Surface tolerance meters", config["surface_tol"])
-    config["min_safe"] = prompt_float("Near-surface safety depth meters", config["min_safe"])
+    config["shallow_tol"] = prompt_float(
+        "Shallow tolerance meters", config["shallow_tol"]
+    )
+    config["surface_tol"] = prompt_float(
+        "Surface tolerance meters", config["surface_tol"]
+    )
+    config["min_safe"] = prompt_float(
+        "Near-surface safety depth meters", config["min_safe"]
+    )
     config["log"] = prompt_float("Log interval seconds", config["log"])
-    config["threshold_timeout"] = prompt_float("Max seconds waiting for a depth threshold", config["threshold_timeout"])
+    config["threshold_timeout"] = prompt_float(
+        "Max seconds waiting for a depth threshold", config["threshold_timeout"]
+    )
 
     parts = [f"{key}={value}" for key, value in config.items()]
     require_ok(send_command(host, port, "CONFIG " + " ".join(parts)))
@@ -189,7 +211,11 @@ def manual_control(host, port):
         parts = raw.split()
         if len(parts) == 4 and parts[0] == "one":
             servo_number, direction, seconds = parts[1], parts[2], parts[3]
-            if servo_number not in {"1", "2"} or direction not in {"down", "up", "neutral"}:
+            if servo_number not in {"1", "2"} or direction not in {
+                "down",
+                "up",
+                "neutral",
+            }:
                 print("Use: one 1 down 0.25 or one 2 up 0.5")
                 continue
             try:
@@ -198,7 +224,13 @@ def manual_control(host, port):
                 print("Seconds must be a number.")
                 continue
 
-            require_ok(send_command(host, port, f"MANUAL_ONE {servo_number} {direction.upper()} {seconds}"))
+            require_ok(
+                send_command(
+                    host,
+                    port,
+                    f"MANUAL_ONE {servo_number} {direction.upper()} {seconds}",
+                )
+            )
             continue
 
         if len(parts) != 2 or parts[0] not in {"down", "up"}:
@@ -280,10 +312,14 @@ def parse_log(lines):
         raise RuntimeError(f"{label} contained no valid rows.")
 
     df = pd.DataFrame(rows)
-    for column in ("time", "depth"):
+    for column in ("time", "depth", "control", "servo"):
+        if column not in df:
+            continue
         df[column] = pd.to_numeric(df[column], errors="coerce")
     for column in ("control", "servo"):
-        df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")
+        if column not in df:
+            continue
+        df[column] = df[column].astype("Int64")
     return label, df
 
 
@@ -303,7 +339,9 @@ def save_and_plot(lines, output_path):
 
 def start_depth_record(host, port):
     require_ok(send_command(host, port, "START_DEPTH_RECORD"))
-    print("Depth recording started. Recover/reconnect later, then choose stop/download.")
+    print(
+        "Depth recording started. Recover/reconnect later, then choose stop/download."
+    )
 
 
 def stop_and_download_depth(host, port):
@@ -318,7 +356,9 @@ def stop_and_download_depth(host, port):
 def start_mission(host, port):
     input("Press Enter to send START_MISSION...")
     require_ok(send_command(host, port, "START_MISSION"))
-    print("Mission started. Polling STATUS until mission_complete=1 before downloading.")
+    print(
+        "Mission started. Polling STATUS until mission_complete=1 before downloading."
+    )
     wait_for_mission_complete(host, port)
     print("Mission complete. Downloading mission data...")
     lines = wait_for_reconnect_and_download(host, port, "GET_MISSION_DATA")
@@ -335,12 +375,21 @@ def menu(host, port):
     servo_config = DEFAULT_SERVO_CONFIG.copy()
 
     actions = {
-        "1": ("Ping/status", lambda: print_response(send_command(host, port, "STATUS"))),
+        "1": (
+            "Ping/status",
+            lambda: print_response(send_command(host, port, "STATUS")),
+        ),
         "2": ("Configure mission", lambda: configure_mission(host, port, config)),
-        "3": ("Configure servo angles", lambda: configure_servos(host, port, servo_config)),
+        "3": (
+            "Configure servo angles",
+            lambda: configure_servos(host, port, servo_config),
+        ),
         "4": ("Zero depth", lambda: require_ok(send_command(host, port, "ZERO_DEPTH"))),
         "5": ("Start depth recording", lambda: start_depth_record(host, port)),
-        "6": ("Stop/download depth recording", lambda: stop_and_download_depth(host, port)),
+        "6": (
+            "Stop/download depth recording",
+            lambda: stop_and_download_depth(host, port),
+        ),
         "7": ("Manual timed control", lambda: manual_control(host, port)),
         "8": ("Start mission and auto-download", lambda: start_mission(host, port)),
         "9": ("Download mission data", lambda: download_mission(host, port)),
@@ -367,8 +416,12 @@ def menu(host, port):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Master topside station for the vertical profiling float.")
-    parser.add_argument("host", help="Float IP address shown by the Arduino Serial Monitor")
+    parser = argparse.ArgumentParser(
+        description="Master topside station for the vertical profiling float."
+    )
+    parser.add_argument(
+        "host", help="Float IP address shown by the Arduino Serial Monitor"
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Float TCP port")
     return parser.parse_args()
 

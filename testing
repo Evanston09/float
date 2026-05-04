@@ -1,0 +1,14 @@
+#include <Servo.h>
+
+#if !defined(ARDUINO_ARCH_SAMD)
+#error "Wrong board selected. Use Tools > Board > Arduino SAMD Boards > Arduino MKR WiFi 1010."
+#endif
+
+
+const int SERVO1_PIN = 2;
+const int SERVO2_PIN = 3;
+
+Servo servo1;
+Servo servo2;
+
+

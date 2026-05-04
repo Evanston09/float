@@ -12,6 +12,8 @@
 const char* ssid = "t480";
 const char* password = "henryisachud";
 
+const char* DEFAULT_COMPANY_STRING = "0297A";
+
 const int SERVO1_PIN = 2;
 const int SERVO2_PIN = 3;
 const int WIFI_LED_PIN = LED_BUILTIN;
@@ -26,6 +28,8 @@ const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
 const unsigned long MANUAL_MAX_MS = 10000;
 const unsigned long CLIENT_COMMAND_TIMEOUT_MS = 30000;
 const unsigned long MISSION_CLIENT_COMMAND_TIMEOUT_MS = 500;
+const unsigned long MISSION_MAX_MS = 12UL * 60UL * 1000UL;
+const unsigned long TIMEOUT_SURFACE_PULSE_MS = 30UL * 1000UL;
 
 struct MissionConfig {
   float deepTargetM;
@@ -72,6 +76,7 @@ enum MissionPhase {
   PHASE_HOLD_SHALLOW,
   PHASE_RETURN_SURFACE_PULSE,
   PHASE_WAIT_SURFACE,
+  PHASE_TIMEOUT_SURFACE_PULSE,
   PHASE_COMPLETE
 };
 
@@ -105,6 +110,7 @@ MissionPhase missionPhase = PHASE_COMPLETE;
 DataPoint logData[MAX_LOG_POINTS];
 int logIndex = 0;
 
+String companyNumber = DEFAULT_COMPANY_STRING;
 float depthOffsetM = 0.0;
 unsigned long modeStartMs = 0;
 unsigned long phaseStartMs = 0;
@@ -179,6 +185,7 @@ const char* missionPhaseName() {
     case PHASE_HOLD_SHALLOW: return "HOLD_SHALLOW";
     case PHASE_RETURN_SURFACE_PULSE: return "RETURN_SURFACE_PULSE";
     case PHASE_WAIT_SURFACE: return "WAIT_SURFACE";
+    case PHASE_TIMEOUT_SURFACE_PULSE: return "TIMEOUT_SURFACE_PULSE";
     case PHASE_COMPLETE: return "MISSION_COMPLETE";
   }
   return "UNKNOWN";
@@ -298,6 +305,26 @@ float valueAfter(String command, String key, float fallback) {
   return command.substring(start, end).toFloat();
 }
 
+String stringValueAfter(String command, String key, String fallback) {
+  int start = command.indexOf(key + "=");
+  if (start < 0) {
+    return fallback;
+  }
+
+  start += key.length() + 1;
+  int end = command.indexOf(' ', start);
+  if (end < 0) {
+    end = command.length();
+  }
+
+  String value = command.substring(start, end);
+  value.trim();
+  if (value.length() == 0) {
+    return fallback;
+  }
+  return value;
+}
+
 int intValueAfter(String command, String key, int fallback) {
   return (int)valueAfter(command, key, fallback);
 }
@@ -308,6 +335,7 @@ unsigned long msValueAfter(String command, String key, unsigned long fallback) {
 }
 
 void applyConfig(String command) {
+  companyNumber = stringValueAfter(command, "company", companyNumber);
   config.deepTargetM = valueAfter(command, "deep", config.deepTargetM);
   config.shallowTargetM = valueAfter(command, "shallow", config.shallowTargetM);
   config.surfaceTargetM = valueAfter(command, "surface", config.surfaceTargetM);
@@ -363,6 +391,7 @@ void setMissionPhase(MissionPhase nextPhase) {
     case PHASE_DEEP_NEUTRALIZE_PULSE:
     case PHASE_RISE_PULSE:
     case PHASE_RETURN_SURFACE_PULSE:
+    case PHASE_TIMEOUT_SURFACE_PULSE:
       commandRise();
       break;
 
@@ -525,8 +554,18 @@ void updateMission(float depth) {
   }
 
   unsigned long elapsedMs = millis() - phaseStartMs;
+  if (missionPhase != PHASE_TIMEOUT_SURFACE_PULSE &&
+      missionPhase != PHASE_COMPLETE &&
+      millis() - modeStartMs >= MISSION_MAX_MS) {
+    setMissionPhase(PHASE_TIMEOUT_SURFACE_PULSE);
+    logPoint(depth, "MISSION_TIMEOUT_SURFACE");
+    return;
+  }
+
   bool thresholdTimedOut = config.thresholdTimeoutMs > 0 && elapsedMs >= config.thresholdTimeoutMs;
-  bool returningSurface = missionPhase == PHASE_RETURN_SURFACE_PULSE || missionPhase == PHASE_WAIT_SURFACE;
+  bool returningSurface = missionPhase == PHASE_RETURN_SURFACE_PULSE ||
+                          missionPhase == PHASE_WAIT_SURFACE ||
+                          missionPhase == PHASE_TIMEOUT_SURFACE_PULSE;
   if (depth < config.minSafeDepthM && !returningSurface && missionPhase != PHASE_SINK_PULSE && missionPhase != PHASE_COMPLETE) {
     if (thresholdTimedOut) {
       setMissionPhase(PHASE_RETURN_SURFACE_PULSE);
@@ -617,6 +656,13 @@ void updateMission(float depth) {
         setMissionPhase(PHASE_COMPLETE);
       } else if (thresholdTimedOut) {
         logPoint(depth, "SURFACE_TIMEOUT");
+        setMissionPhase(PHASE_TIMEOUT_SURFACE_PULSE);
+      }
+      break;
+
+    case PHASE_TIMEOUT_SURFACE_PULSE:
+      commandRise();
+      if (elapsedMs >= TIMEOUT_SURFACE_PULSE_MS) {
         setMissionPhase(PHASE_COMPLETE);
       }
       break;
@@ -631,9 +677,11 @@ void updateMission(float depth) {
 
 void sendLog(WiFiClient& client, const char* label) {
   client.println(label);
-  client.println("time,depth,state,control,servo");
+  client.println("company,time,depth,state,control,servo");
 
   for (int i = 0; i < logIndex; i++) {
+    client.print(companyNumber);
+    client.print(",");
     client.print(logData[i].timeMs / 1000.0, 3);
     client.print(",");
     client.print(logData[i].depth, 3);
@@ -652,6 +700,8 @@ void sendLog(WiFiClient& client, const char* label) {
 void sendStatus(WiFiClient& client) {
   client.print("OK STATUS mode=");
   client.print(modeName());
+  client.print(" company=");
+  client.print(companyNumber);
   client.print(" mission_complete=");
   client.print(missionComplete ? "1" : "0");
   client.print(" phase=");
@@ -676,6 +726,10 @@ void sendStatus(WiFiClient& client) {
   client.print(config.shallowNeutralizePulseMs / 1000.0, 2);
   client.print(" return_surface_s=");
   client.print(config.returnSurfacePulseMs / 1000.0, 2);
+  client.print(" mission_max_s=");
+  client.print(MISSION_MAX_MS / 1000.0, 2);
+  client.print(" timeout_surface_pulse_s=");
+  client.print(TIMEOUT_SURFACE_PULSE_MS / 1000.0, 2);
   client.print(" threshold_timeout_s=");
   client.println(config.thresholdTimeoutMs / 1000.0, 2);
   client.flush();
